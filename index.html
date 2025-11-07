@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>0DTE Strategy Dashboard</title>
+  <!-- 1. Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 2. PapaParse for CSV parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <!-- 3. React Libraries -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- 4. Recharts for Charts -->
+  <script src="https://unpkg.com/recharts@latest/umd/Recharts.min.js"></script>
+  <!-- 5. Lucide for Icons -->
+  <script src="https://unpkg.com/lucide-react@latest/dist/umd/lucide-react.js"></script>
+  <!-- 6. React Dropzone for file uploads -->
+  <script src="https://unpkg.com/react-dropzone@latest/dist/react-dropzone.js"></script>
+  <!-- 7. Babel for JSX Transpilation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <style>
+    /* Prevents white flash on load */
+    body {
+      background-color: #111827; /* bg-gray-900 */
+    }
+    /* Simple loading text */
+    #root:empty::before {
+      content: "Loading Dashboard...";
+      display: block;
+      text-align: center;
+      padding-top: 4rem;
+      font-size: 1.5rem;
+      color: #9CA3AF; /* text-gray-400 */
+    }
+  </style>
+</head>
+<body>
+
+  <!-- This is where the React app will mount -->
+  <div id="root"></div>
+
+  <!-- This script contains the entire React application logic -->
+  <script type="text/babel">
+    // --- 1. Destructure all CDN libraries into scope ---
+    const { useState, useMemo, useEffect } = React;
+    const { useDropzone } = ReactDropzone;
+    const { 
+      LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
+      BarChart, Bar, PieChart, Pie, Cell, Legend: PieLegend 
+    } = Recharts;
+    const { 
+      Upload, DollarSign, TrendingUp, TrendingDown, CheckCircle, AlertTriangle, 
+      FileText, Filter, Shield, Target, Layers, Clock, CalendarDays, Timer, 
+      PlusCircle, MinusCircle, DivideCircle, BarChartHorizontal, Waves, Scaling 
+    } = lucide;
+
+    // --- 2. All Helper Functions (Copied from React file) ---
+
+    /**
+     * Calculates key performance metrics from a list of trades.
+     */
+    const calculateMetrics = (trades, isNormalized) => {
+      if (!trades || trades.length === 0) {
+        return {
+          totalPL: 0, totalTrades: 0, winRate: 0, avgPL: 0, var95: 0, cvar95: 0,
+          avgWin: 0, avgLoss: 0, profitFactor: 0, profitCapturePct: 0,
+        };
+      }
+
+      const processedTrades = trades.map(t => ({
+        ...t,
+        pl: isNormalized ? t.pl / (t.contracts || 1) : t.pl
+      }));
+      
+      const pls = processedTrades.map(t => t.pl).sort((a, b) => a - b);
+      const totalTrades = pls.length;
+      const totalPL = pls.reduce((acc, pl) => acc + pl, 0);
+      
+      const winningTradesData = pls.filter(pl => pl > 0);
+      const losingTradesData = pls.filter(pl => pl < 0);
+
+      const totalWinnings = winningTradesData.reduce((acc, pl) => acc + pl, 0);
+      const totalLosses = Math.abs(losingTradesData.reduce((acc, pl) => acc + pl, 0));
+
+      const winRate = (winningTradesData.length / totalTrades) * 100;
+      const avgPL = totalPL / totalTrades;
+      
+      const avgWin = totalWinnings / (winningTradesData.length || 1);
+      const avgLoss = totalLosses / (losingTradesData.length || 1);
+      const profitFactor = totalWinnings / (totalLosses || 1);
+
+      const varIndex = Math.floor(totalTrades * 0.05);
+      const var95 = pls[varIndex] || 0;
+      const lossesBeyondVar = pls.slice(0, varIndex + 1);
+      const cvar95 = lossesBeyondVar.reduce((acc, pl) => acc + pl, 0) / (lossesBeyondVar.length || 1);
+
+      const stoTrades = trades.filter(t => t.legType === 'Core (STO)' && t.initialPremium > 0);
+      let profitCapturePct = 0;
+      
+      if (stoTrades.length > 0) {
+        const totalCapturedPL = stoTrades.reduce((acc, t) => acc + t.pl, 0);
+        const totalMaxPremium = stoTrades.reduce((acc, t) => acc + (t.initialPremium * t.contracts * 100), 0);
+        
+        if (totalMaxPremium > 0) {
+          profitCapturePct = (totalCapturedPL / totalMaxPremium) * 100;
+        }
+      }
+
+      return {
+        totalPL, totalTrades, winRate, avgPL, var95, cvar95,
+        avgWin, avgLoss: -avgLoss, profitFactor, profitCapturePct,
+      };
+    };
+
+    /**
+     * Prepares data for the charts.
+     */
+    const prepareChartData = (trades, isNormalized) => {
+      const processedTrades = trades.map(t => ({
+        ...t,
+        pl: isNormalized ? t.pl / (t.contracts || 1) : t.pl
+      }));
+
+      const sortedTrades = [...processedTrades].sort((a, b) => a.dateClosed - b.dateClosed);
+      
+      let cumulativePL = 0;
+      const equityCurve = sortedTrades.map((trade, index) => {
+        cumulativePL += trade.pl;
+        return {
+          name: trade.dateClosed.toLocaleDateString(),
+          tradeNumber: index + 1,
+          'Cumulative P/L': cumulativePL,
+        };
+      });
+
+      if (trades.length === 0) {
+        return { 
+          equityCurve: [], plDistribution: [], reasonData: [], hourlyPLData: [],
+          dayOfWeekPLData: [], durationPLData: [], underlyingMovePLData: [],
+        };
+      }
+      
+      const pls = processedTrades.map(t => t.pl);
+      const minPL = Math.min(...pls);
+      const maxPL = Math.max(...pls);
+      const numBins = 20;
+      const binSize = (maxPL - minPL === 0) ? 1 : (maxPL - minPL) / numBins;
+      
+      const bins = Array(numBins).fill(0).map((_, i) => {
+          const binStart = minPL + i * binSize;
+          const binEnd = binStart + binSize;
+          return {
+              range: `${binStart.toFixed(0)} to ${binEnd.toFixed(0)}`,
+              count: 0, binStart, binEnd,
+          };
+      });
+
+      pls.forEach(pl => {
+          let foundBin = false;
+          for (const bin of bins) {
+              if (pl >= bin.binStart && pl < bin.binEnd) {
+                  bin.count++;
+                  foundBin = true;
+                  break;
+              }
+          }
+          if (!foundBin || pl === maxPL) {
+              bins[bins.length - 1].count++;
+          }
+      });
+
+      const reasonMap = new Map();
+      processedTrades.forEach(trade => {
+        const reason = trade.reason || 'Unknown';
+        const current = reasonMap.get(reason) || { totalPL: 0, count: 0 };
+        reasonMap.set(reason, {
+          totalPL: current.totalPL + trade.pl,
+          count: current.count + 1,
+        });
+      });
+      const reasonData = Array.from(reasonMap.entries()).map(([name, data]) => ({
+        name: name, value: data.totalPL, count: data.count,
+      }));
+
+      const hourlyPLData = Array(24).fill(null).map((_, i) => ({ 
+        hour: i, 'Total P/L': 0, count: 0 
+      }));
+      processedTrades.forEach(trade => {
+        const hour = trade.openHour; 
+        if (hour >= 0 && hour <= 23) {
+          hourlyPLData[hour]['Total P/L'] += trade.pl;
+          hourlyPLData[hour].count++;
+        }
+      });
+      const formatHour = (h) => {
+        if (h === 0) return '12 AM';
+        if (h < 12) return `${h} AM`;
+        if (h === 12) return '12 PM';
+        return `${h - 12} PM`;
+      };
+      const formattedHourlyData = hourlyPLData.map(d => ({
+        ...d, hourLabel: formatHour(d.hour)
+      }));
+
+      const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const dayOfWeekPLData = dayLabels.map(day => ({
+        day: day, 'Total P/L': 0, count: 0
+      }));
+      processedTrades.forEach(trade => {
+        const dayIndex = trade.dayOfWeek;
+        dayOfWeekPLData[dayIndex]['Total P/L'] += trade.pl;
+        dayOfWeekPLData[dayIndex].count++;
+      });
+
+      const durationBins = [
+        { label: '0-30m', min: 0, max: 30, 'Total P/L': 0, count: 0 },
+        { label: '30-60m', min: 30, max: 60, 'Total P/L': 0, count: 0 },
+        { label: '1-2h', min: 60, max: 120, 'Total P/L': 0, count: 0 },
+        { label: '2-4h', min: 120, max: 240, 'Total P/L': 0, count: 0 },
+        { label: '4-6h', min: 240, max: 360, 'Total P/L': 0, count: 0 },
+        { label: '6h+', min: 360, max: Infinity, 'Total P/L': 0, count: 0 },
+      ];
+      processedTrades.forEach(trade => {
+        const duration = trade.durationMinutes;
+        for (const bin of durationBins) {
+          if (duration >= bin.min && duration < bin.max) {
+            bin['Total P/L'] += trade.pl;
+            bin.count++;
+            break;
+          }
+        }
+      });
+
+      const moveBins = [
+        { label: '< -1%', min: -Infinity, max: -1, 'Total P/L': 0, count: 0 },
+        { label: '-1% to -0.5%', min: -1, max: -0.5, 'Total P/L': 0, count: 0 },
+        { label: '-0.5% to 0%', min: -0.5, max: 0, 'Total P/L': 0, count: 0 },
+        { label: '0% to 0.5%', min: 0, max: 0.5, 'Total P/L': 0, count: 0 },
+        { label: '0.5% to 1%', min: 0.5, max: 1, 'Total P/L': 0, count: 0 },
+        { label: '> 1%', min: 1, max: Infinity, 'Total P/L': 0, count: 0 },
+      ];
+      processedTrades.forEach(trade => {
+        const movePct = trade.underlyingMovePct; 
+        for (const bin of moveBins) {
+          if (movePct >= bin.min && movePct < bin.max) {
+            bin['Total P/L'] += trade.pl;
+            bin.count++;
+            break;
+          }
+        }
+      });
+      
+      return { 
+        equityCurve, 
+        plDistribution: bins, 
+        reasonData, 
+        hourlyPLData: formattedHourlyData.filter(d => d.count > 0),
+        dayOfWeekPLData: dayOfWeekPLData.filter(d => d.count > 0),
+        durationPLData: durationBins.filter(d => d.count > 0),
+        underlyingMovePLData: moveBins.filter(d => d.count > 0),
+      };
+    };
+
+    // --- 3. All React Components (Copied from React file) ---
+
+    /**
+     * KpiCard Component
+     */
+    const KpiCard = ({ title, value, icon, format = "number", unit = "" }) => {
+      const IconComponent = icon || DollarSign;
+      
+      let displayValue;
+      if (format === "currency") {
+        const minDigits = Math.abs(value) > 0 && Math.abs(value) < 1 ? 4 : 2;
+        displayValue = value.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: minDigits, maximumFractionDigits: 4 });
+      } else if (format === "percent") {
+        displayValue = `${value.toFixed(2)}%`;
+      } else if (format === "decimal") {
+        displayValue = value.toFixed(2);
+      } else {
+        displayValue = value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+      }
+      
+      const isNegative = typeof value === 'number' && value < 0 && title !== 'Avg. Loss';
+      const isPositive = typeof value === 'number' && value > 0 && title !== 'Avg. Loss';
+
+      let colorClass = 'text-white';
+      if (isNegative) colorClass = 'text-red-400';
+      if (isPositive) colorClass = 'text-green-400';
+      if (title === 'Avg. Loss') colorClass = 'text-red-400';
+      if (title === 'Avg. Win') colorClass = 'text-green-400';
+      if (title === 'Profit Factor' && value < 1) colorClass = 'text-red-400';
+      if (title === 'Profit Factor' && value > 1) colorClass = 'text-green-400';
+      if (title === 'Profit Capture %' && value < 25) colorClass = 'text-yellow-400';
+      if (title === 'Profit Capture %' && value >= 25) colorClass = 'text-green-400';
+
+      return (
+        <div className="bg-gray-800 p-6 rounded-xl shadow-lg flex items-center space-x-4">
+          <div className={`p-3 rounded-full ${isNegative ? 'bg-red-900 text-red-300' : 'bg-gray-700 text-blue-300'}`}>
+            <IconComponent size={24} />
+          </div>
+          <div>
+            <div className="text-sm font-medium text-gray-400 uppercase tracking-wider">{title}</div>
+            <div className={`text-3xl font-bold ${colorClass}`}>
+              {displayValue}
+              {unit && <span className="text-lg ml-1">{unit}</span>}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    /**
+     * FileUploader Component
+     */
+    const FileUploader = ({ onFileUpload, fileName }) => {
+      const { getRootProps, getInputProps, isDragActive } = useDropzone({
+        onDrop: acceptedFiles => onFileUpload(acceptedFiles[0]),
+        accept: { 'text/csv': ['.csv'] },
+        multiple: false,
+      });
+
+      return (
+        <div
+          {...getRootProps()}
+          className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors h-full flex flex-col justify-center
+                      ${isDragActive ? 'border-blue-500 bg-gray-700' : 'border-gray-600 hover:border-gray-500'}
+                      ${fileName ? 'bg-green-900 border-green-700' : 'bg-gray-800'}`}
+        >
+          <input {...getInputProps()} />
+          {fileName ? (
+            <div className="flex flex-col items-center text-green-300">
+              <FileText size={40} className="mb-3" />
+              <p className="text-xl font-semibold">File Loaded:</p>
+              <p className="text-lg">{fileName}</p>
+              <p className="text-sm text-gray-400 mt-2">(Drag a new file or click to replace)</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center text-gray-400">
+              <Upload size={40} className="mb-3 text-gray-500" />
+              <p className="text-xl font-semibold">Drop your trade log here</p>
+              <p className="text-lg text-gray-500">or click to browse</p>
+              <p className="text-sm text-gray-600 mt-2">(.csv files only)</p>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    /**
+     * StrategyFilter Component
+     */
+    const StrategyFilter = ({ allStrategies, selectedStrategies, onChange }) => {
+      const handleChange = (e) => {
+        const selectedOptions = Array.from(e.target.selectedOptions, option => option.value);
+        onChange(selectedOptions);
+      };
+
+      return (
+        <div className="bg-gray-800 p-4 rounded-lg h-full">
+          <label htmlFor="strategy-select" className="block text-sm font-medium text-gray-300 mb-2">
+            Filter Strategies
+          </label>
+          <select
+            id="strategy-select"
+            multiple
+            value={selectedStrategies}
+            onChange={handleChange}
+            className="w-full h-40 bg-gray-900 border border-gray-700 text-gray-200 rounded-md p-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            {allStrategies.map(strategy => (
+              <option key={strategy} value={strategy} className="p-2">
+                {strategy}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 mt-2">Hold Ctrl/Cmd to select multiple.</p>
+        </div>
+      );
+    };
+
+    /**
+     * LegTypeFilter Component
+     */
+    const LegTypeFilter = ({ selectedValue, onChange }) => {
+      const options = [
+        { value: 'All Trades', label: 'All Trades', icon: Layers },
+        { value: 'Core (STO)', label: 'Core (STO) Only', icon: Target },
+        { value: 'Wing (BTO)', label: 'Wing (BTO) Only', icon: Shield },
+      ];
+
+      return (
+        <div className="bg-gray-800 p-4 rounded-lg h-full">
+          <label className="block text-sm font-medium text-gray-300 mb-3">
+            Filter Leg Type
+          </label>
+          <div className="space-y-2">
+            {options.map(option => {
+              const Icon = option.icon;
+              return (
+                <label key={option.value} className="flex items-center space-x-3 p-3 bg-gray-900 rounded-md cursor-pointer hover:bg-gray-700 transition-colors">
+                  <input
+                    type="radio"
+                    name="legType"
+                    value={option.value}
+                    checked={selectedValue === option.value}
+                    onChange={(e) => onChange(e.target.value)}
+                    className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-500"
+                  />
+                  <Icon className="w-5 h-5 text-gray-400" />
+                  <span className="text-gray-200">{option.label}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
+    /**
+     * NormalizationToggle Component
+     */
+    const NormalizationToggle = ({ isNormalized, onChange }) => {
+      return (
+        <div className="bg-gray-800 p-4 rounded-lg h-full flex flex-col justify-center">
+          <label className="flex items-center justify-between cursor-pointer">
+            <div className="flex items-center space-x-3">
+              <Scaling className="w-5 h-5 text-gray-400" />
+              <span className="text-sm font-medium text-gray-300">Normalize P/L (Per Contract)</span>
+            </div>
+            <div className="relative">
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={isNormalized}
+                onChange={(e) => onChange(e.target.checked)}
+              />
+              <div className={`block w-12 h-7 rounded-full ${isNormalized ? 'bg-blue-600' : 'bg-gray-700'}`}></div>
+              <div className={`dot absolute left-1 top-1 bg-white w-5 h-5 rounded-full transition-transform ${isNormalized ? 'translate-x-full' : ''}`}></div>
+            </div>
+          </label>
+          <p className="text-xs text-gray-500 mt-2">View all P/L stats relative to a single contract.</p>
+        </div>
+      );
+    };
+
+
+    /**
+     * The main application component.
+     * REMOVED 'export default'
+     */
+    function App() {
+      const [allData, setAllData] = useState([]);
+      const [fileName, setFileName] = useState("");
+      const [allStrategies, setAllStrategies] = useState([]);
+      const [selectedStrategies, setSelectedStrategies] = useState([]);
+      // PapaParse is now loaded in the <head>, so we just check for it
+      const [isPapaLoaded, setIsPapaLoaded] = useState(!!window.Papa);
+      const [selectedLegType, setSelectedLegType] = useState('All Trades');
+      const [isNormalized, setIsNormalized] = useState(false);
+
+      // --- Data Processing ---
+      const handleFileUpload = (file) => {
+        if (file && window.Papa) {
+          setFileName(file.name);
+          window.Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            complete: (results) => {
+              const processedData = results.data.map(row => {
+                const legsStr = row['Legs'] || '';
+                let legType = 'Unknown';
+                if (legsStr.includes(' STO ')) legType = 'Core (STO)';
+                else if (legsStr.includes(' BTO ')) legType = 'Wing (BTO)';
+                
+                const dateOpened = new Date(row['Date Opened']);
+                const dateClosed = new Date(row['Date Closed']);
+                
+                const pl = parseFloat(row['P/L']);
+                const contracts = parseInt(row['No. of Contracts']) || 1;
+                const initialPremium = parseFloat(row['Initial Premium']);
+                const openingPrice = parseFloat(row['Opening Price']);
+                const closingPrice = parseFloat(row['Closing Price']);
+
+                const durationMinutes = (dateClosed - dateOpened) / (1000 * 60);
+                const dayOfWeek = dateOpened.getDay();
+                let underlyingMovePct = 0;
+                if(openingPrice > 0) {
+                  underlyingMovePct = ((closingPrice - openingPrice) / openingPrice) * 100;
+                }
+
+                return {
+                  ...row,
+                  pl, dateClosed, dateOpened, 
+                  openHour: dateOpened.getHours(), 
+                  reason: row['Reason For Close'],
+                  strategy: row['Strategy'],
+                  legType, durationMinutes, dayOfWeek,
+                  contracts, initialPremium, openingPrice, 
+                  closingPrice, underlyingMovePct,
+                };
+              }).filter(row => 
+                  !isNaN(row.pl) && 
+                  row.dateClosed.toString() !== 'Invalid Date' &&
+                  row.dateOpened.toString() !== 'Invalid Date' &&
+                  !isNaN(row.contracts)
+              );
+
+              const uniqueStrategies = [...new Set(processedData.map(row => row.strategy))].sort();
+              
+              setAllData(processedData);
+              setAllStrategies(uniqueStrategies);
+              setSelectedStrategies(uniqueStrategies);
+              setSelectedLegType('All Trades');
+              setIsNormalized(false);
+            },
+            error: (error) => {
+              console.error("CSV parsing error:", error.message);
+              setFileName("Error parsing file!");
+              setAllData([]);
+            }
+          });
+        } else if (!window.Papa) {
+          console.error("PapaParse not loaded yet.");
+          setFileName("Parser not ready, please try again.");
+        }
+      };
+
+      // Memoize filtered data
+      const filteredData = useMemo(() => {
+        let data = allData.filter(row => selectedStrategies.includes(row.strategy));
+        
+        if (selectedLegType === 'Core (STO)') {
+          data = data.filter(row => row.legType === 'Core (STO)');
+        } else if (selectedLegType === 'Wing (BTO)') {
+          data = data.filter(row => row.legType === 'Wing (BTO)');
+        }
+        
+        return data;
+      }, [allData, selectedStrategies, selectedLegType]); 
+
+      // Memoize calculations
+      const metrics = useMemo(() => {
+        return calculateMetrics(filteredData, isNormalized);
+      }, [filteredData, isNormalized]);
+
+      const chartData = useMemo(() => {
+        return prepareChartData(filteredData, isNormalized);
+      }, [filteredData, isNormalized]);
+
+      const PIE_COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#FF00FF'];
+
+      // --- Render ---
+      return (
+        <div className="min-h-screen bg-gray-900 text-gray-200 font-sans p-4 md:p-8">
+          <div className="max-w-7xl mx-auto">
+            
+            {/* Header */}
+            <header className="mb-8">
+              <h1 className="text-4xl font-bold text-white mb-2">0DTE Strategy Dashboard</h1>
+              <p className="text-lg text-gray-400">Upload your trade log to analyze live performance and risk.</p>
+            </header>
+
+            {/* Controls */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+              <div className="lg:col-span-1">
+                {isPapaLoaded ? (
+                  <FileUploader onFileUpload={handleFileUpload} fileName={fileName} />
+                ) : (
+                  <div className="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center bg-gray-800 text-gray-400 h-full flex flex-col justify-center">
+                    <p className="text-xl font-semibold">Loading data parser...</p>
+                    <p className="text-sm">Please wait.</p>
+                  </div>
+                )}
+              </div>
+              {allData.length > 0 && (
+                <>
+                  <div className="lg:col-span-1">
+                    <StrategyFilter
+                      allStrategies={allStrategies}
+                      selectedStrategies={selectedStrategies}
+                      onChange={setSelectedStrategies}
+                    />
+                  </div>
+                  <div className="lg:col-span-1">
+                    <LegTypeFilter
+                      selectedValue={selectedLegType}
+                      onChange={setSelectedLegType}
+                    />
+                  </div>
+                  <div className="lg:col-span-1">
+                    <NormalizationToggle
+                      isNormalized={isNormalized}
+                      onChange={setIsNormalized}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Dashboard Content */}
+            {allData.length === 0 ? (
+              <div className="text-center text-gray-500 bg-gray-800 p-12 rounded-lg">
+                <h2 className="text-2xl font-semibold">Waiting for data...</h2>
+                <p className="text-lg">Please upload your CSV file to populate the dashboard.</p>
+              </div>
+            ) : filteredData.length === 0 ? ( 
+              <div className="text-center text-gray-500 bg-gray-800 p-12 rounded-lg">
+                <h2 className="text-2xl font-semibold">No Data for Selected Filters</h2>
+                <p className="text-lg">Try adjusting your 'Strategy' or 'Leg Type' filters.</p>
+              </div>
+            ) : (
+              <>
+                {/* KPI Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                  <KpiCard 
+                    title={isNormalized ? "Total P/L (Per Contract)" : "Total P/L"} 
+                    value={metrics.totalPL} 
+                    format="currency" 
+                    icon={DollarSign} 
+                  />
+                  <KpiCard title="Profit Factor" value={metrics.profitFactor} format="decimal" icon={DivideCircle} />
+                  <KpiCard title="Win Rate" value={metrics.winRate} format="percent" icon={CheckCircle} />
+                  <KpiCard 
+                    title="Profit Capture %" 
+                    value={metrics.profitCapturePct} 
+                    format="percent" 
+                    icon={Waves} 
+                    unit={selectedLegType === 'Core (STO)' || selectedLegType === 'All Trades' ? '(STO Only)' : ''}
+                  />
+                  <KpiCard title="Avg. Win" value={metrics.avgWin} format="currency" icon={PlusCircle} />
+                  <KpiCard title="Avg. Loss" value={metrics.avgLoss} format="currency" icon={MinusCircle} />
+                  <KpiCard title="Avg. P/L Per Trade" value={metrics.avgPL} format="currency" icon={TrendingUp} />
+                  <KpiCard title="Total Trades" value={metrics.totalTrades} icon={FileText} />
+                  <KpiCard title="95% CVaR (Tail Risk)" value={metrics.cvar95} format="currency" icon={AlertTriangle} />
+                  <KpiCard title="95% VaR" value={metrics.var95} format="currency" icon={TrendingDown} />
+                  <div className="hidden lg:block" />
+                  <div className="hidden lg:block" />
+                </div>
+
+                {/* Charts Grid */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                  
+                  {/* Equity Curve */}
+                  <div className="bg-gray-800 p-6 rounded-xl shadow-lg h-96">
+                    <h3 className="text-xl font-semibold text-white mb-4">Cumulative P/L {isNormalized && '(Per Contract)'}</h3>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={chartData.equityCurve} margin={{ top: 5, right: 20, left: 10, bottom: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#4B5563" />
+                        <XAxis 
+                          dataKey="tradeNumber" 
+                          stroke="#9CA3AF"
+                          label={{ value: 'Trade Number', position: 'insideBottom', offset: -15, fill: '#9CA3AF' }} 
+                          domain={['dataMin', 'dataMax']}
+                        />
+                        <YAxis 
+                          stroke="#9CA3AF" 
+                          tickFormatter={(val) => `$${val.toLocaleString()}`}
+                          domain={['auto', 'auto']}
+                        />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
+                          labelStyle={{ color: '#E5E7EB' }}
+                          formatter={(value) => [value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: isNormalized ? 4 : 2 }), 'Cumulative P/L']}
+                        />
+                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                        <Line type="monotone" dataKey="Cumulative P/L" stroke="#3B82F6" strokeWidth={2} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  
+                  {/* P/L by Open Hour */}
+                  <div className="bg-gray-800 p-6 rounded-xl shadow-lg h-96">
+                    <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
+                      <Clock size={20} className="mr-2" />
+                      P/L by Open Hour {isNormalized && '(Per Contract)'}
+                    </h3>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartData.hourlyPLData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#4B5563" />
+                        <XAxis dataKey="hourLabel" stroke="#9CA3AF" tick={{fontSize: 10}} />
+                        <YAxis stroke="#9CA3AF" tickFormatter={(val) => `$${val.toLocaleString()}`} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
+                          labelStyle={{ color: '#E5E7EB' }}
+                          formatter={(value, name) => [value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: isNormalized ? 4 : 0 }), name]}
+                        />
+                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                        <Bar dataKey="Total P/L" name="Total P/L">
+                          {chartData.hourlyPLData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry['Total P/L'] < 0 ? '#EF4444' : '#10B981'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* P/L by Day of Week */}
+                  <div className="bg-gray-800 p-6 rounded-xl shadow-lg h-96">
+                    <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
+                      <CalendarDays size={20} className="mr-2" />
+                      P/L by Day of Week {isNormalized && '(Per Contract)'}
+                    </h3>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartData.dayOfWeekPLData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#4B5563" />
+                        <XAxis dataKey="day" stroke="#9CA3AF" />
+                        <YAxis stroke="#9CA3AF" tickFormatter={(val) => `$${val.toLocaleString()}`} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
+                          labelStyle={{ color: '#E5E7EB' }}
+                          formatter={(value, name) => [value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: isNormalized ? 4 : 0 }), name]}
+                        />
+                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                        <Bar dataKey="Total P/L" name="Total P/L">
+                          {chartData.dayOfWeekPLData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry['Total P/L'] < 0 ? '#EF4444' : '#10B981'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* P/L by Trade Duration */}
+                  <div className="bg-gray-800 p-6 rounded-xl shadow-lg h-96">
+                    <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
+                      <Timer size={20} className="mr-2" />
+                      P/L by Trade Duration {isNormalized && '(Per Contract)'}
+                    </h3>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartData.durationPLData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#4B5563" />
+                        <XAxis dataKey="label" stroke="#9CA3AF" />
+                        <YAxis stroke="#9CA3AF" tickFormatter={(val) => `$${val.toLocaleString()}`} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
+                          labelStyle={{ color: '#E5E7EB' }}
+                          formatter={(value, name) => [value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: isNormalized ? 4 : 0 }), name]}
+                        />
+                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                        <Bar dataKey="Total P/L" name="Total P/L">
+                          {chartData.durationPLData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry['Total P/L'] < 0 ? '#EF4444' : '#10B981'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* P/L by Underlying Move */}
+                  <div className="bg-gray-800 p-6 rounded-xl shadow-lg h-96">
+                    <h3 className="text-xl font-semibold text-white mb-4 flex items-center">
+                      <BarChartHorizontal size={20} className="mr-2" />
+                      P/L by Underlying's Move {isNormalized && '(Per Contract)'}
+                    </h3>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartData.underlyingMovePLData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#4B5563" />
+                        <XAxis dataKey="label" stroke="#9CA3AF" tick={{fontSize: 10}} />
+                        <YAxis stroke="#9CA3AF" tickFormatter={(val) => `$${val.toLocaleString()}`} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
+                          labelStyle={{ color: '#E5E7EB' }}
+                          formatter={(value, name) => [value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: isNormalized ? 4 : 0 }), name]}
+                        />
+                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                        <Bar dataKey="Total P/L" name="Total P/L">
+                          {chartData.underlyingMovePLData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry['Total P/L'] < 0 ? '#EF4444' : '#10B981'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* P/L Distribution */}
+                  <div className="bg-gray-800 p-6 rounded-xl shadow-lg h-96">
+                    <h3 className="text-xl font-semibold text-white mb-4">P/L Distribution {isNormalized && '(Per Contract)'}</h3>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartData.plDistribution} margin={{ top: 5, right: 20, left: 10, bottom: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#4B5563" />
+                        <XAxis 
+                          dataKey="range" 
+                          stroke="#9CA3AF" 
+                          tick={{fontSize: 10}}
+                          label={{ value: 'P/L Bins ($)', position: 'insideBottom', offset: -15, fill: '#9CA3AF' }}
+                        />
+                        <YAxis stroke="#9CA3AF" allowDecimals={false} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
+                          labelStyle={{ color: '#E5E7EB' }}
+                        />
+                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                        <Bar dataKey="count" fill="#10B981">
+                          {chartData.plDistribution.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.binStart < 0 ? '#EF4444' : '#10B981'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* P/L by Reason for Close */}
+                  <div className="bg-gray-800 p-6 rounded-xl shadow-lg h-96 lg:col-span-2">
+                    <h3 className="text-xl font-semibold text-white mb-4">Total P/L by Close Reason {isNormalized && '(Per Contract)'}</h3>
+                    <ResponsiveContainer width="100%" height="1which - (">
+                      <PieChart height={400}>
+                        <Pie
+                          data={chartData.reasonData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={120}
+                          fill="#8884d8"
+                          labelLine={false}
+                          label={({ name, percent, value }) => 
+                            `${name}: ${value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: isNormalized ? 4 : 0 })} (${(percent * 100).toFixed(0)}%)`
+                          }
+                        >
+                          {chartData.reasonData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          formatter={(value) => value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: isNormalized ? 4 : 2 })}
+                          contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
+                        />
+                        <PieLegend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Raw Data Table */}
+                <div className="bg-gray-800 p-6 rounded-xl shadow-lg">
+                  <h3 className="text-xl font-semibold text-white mb-4">Filtered Trade Log ({filteredData.length} Trades)</h3>
+                  <div className="overflow-auto max-h-96 relative">
+                    <table className="min-w-full divide-y divide-gray-700">
+                      <thead className="bg-gray-700 sticky top-0">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Strategy</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Leg Type</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Date Opened</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Hold (min)</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">P/L</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Contracts</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Premium</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Open Price</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Close Price</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Reason</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Legs</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-gray-800 divide-y divide-gray-700">
+                        {filteredData.slice(0, 200).map((row, i) => ( // Only show first 200 for performance
+                          <tr key={i} className="hover:bg-gray-700">
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">{row.strategy}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm">
+                              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                                row.legType === 'Core (STO)' ? 'bg-red-900 text-red-300' :
+                                row.legType === 'Wing (BTO)' ? 'bg-green-900 text-green-300' : 'bg-gray-7G00 text-gray-300'
+                              }`}>
+                                {row.legType}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">{row.dateOpened.toLocaleString()}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">{row.durationMinutes.toFixed(1)}</td>
+                            <td className={`px-4 py-3 whitespace-nowrap text-sm font-medium ${row.pl < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                              {row.pl.toFixed(2)}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">{row.contracts}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">{row.initialPremium}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">{row.openingPrice}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-200">{row.closingPrice}</td>
+                            <td className="px-4 py-3 whitespace-rowrap text-sm text-gray-200">{row.reason}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400 max-w-xs truncate">{row['Legs']}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {filteredData.length > 200 && (
+                       <div className="text-center p-4 font-medium text-gray-500">Showing first 200 trades.</div>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+
+          </div>
+        </div>
+      );
+    }
+
+    // --- 4. Mount the App to the DOM ---
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+
+  </script>
+</body>
+</html>
