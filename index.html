@@ -284,11 +284,16 @@
           });
         });
 
-        const reasonData = Array.from(reasonMap.entries()).map(([name, data]) => ({
-          name,
-          value: data.totalPL,
-          count: data.count,
-        }));
+        const reasonData = Array.from(reasonMap.entries()).map(([name, data]) => {
+          const val = Number.isFinite(data.totalPL) ? data.totalPL : 0;
+          return {
+            name,
+            value: val,                // signed P/L for tooltips and labels
+            valueAbs: Math.abs(val),   // size for the pie slice
+            count: data.count,
+            sign: Math.sign(val) || 0, // for coloring
+          };
+        });
 
         const hourlyPLData = Array(24)
           .fill(null)
@@ -698,7 +703,10 @@
 
         const metrics = useMemo(() => calculateMetrics(filteredData, isNormalized), [filteredData, isNormalized]);
         const chartData = useMemo(() => prepareChartData(filteredData, isNormalized), [filteredData, isNormalized]);
-
+        const hasReasonSlices = useMemo(
+          () => chartData.reasonData.some(d => d.valueAbs > 0),
+          [chartData.reasonData]
+        );
         const PIE_COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#8884D8", "#FF00FF"];
 
         return (
@@ -980,43 +988,56 @@
                       <h3 className="text-xl font-semibold text-white mb-4">
                         Total P/L by Close Reason {isNormalized && "(Per Contract)"}
                       </h3>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={chartData.reasonData}
-                            dataKey="value"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            outerRadius={120}
-                            fill="#8884d8"
-                            labelLine={false}
-                            label={({ name, percent, value }) =>
-                              `${name}: ${value.toLocaleString("en-US", {
-                                style: "currency",
-                                currency: "USD",
-                                maximumFractionDigits: isNormalized ? 4 : 0,
-                              })} (${(percent * 100).toFixed(0)}%)`
-                            }
-                          >
-                            {chartData.reasonData.map((entry, index) => (
-                              <Cell key={`reason-cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                            ))}
-                          </Pie>
-                          <Tooltip
-                            formatter={(value) =>
-                              value.toLocaleString("en-US", {
-                                style: "currency",
-                                currency: "USD",
-                                maximumFractionDigits: isNormalized ? 4 : 2,
-                              })
-                            }
-                            contentStyle={{ backgroundColor: "#1F2937", border: "1px solid #374151" }}
-                          />
-                          <Legend wrapperStyle={{ color: "#E5E7EB" }} />
-                        </PieChart>
-                      </ResponsiveContainer>
+                    
+                      {hasReasonSlices ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={chartData.reasonData}
+                              dataKey="valueAbs"     // absolute for slice size
+                              nameKey="name"
+                              cx="50%"
+                              cy="50%"
+                              outerRadius={120}
+                              labelLine={false}
+                              label={({ name, percent, payload }) =>
+                                `${name}: ${payload.value.toLocaleString("en-US", {
+                                  style: "currency",
+                                  currency: "USD",
+                                  maximumFractionDigits: isNormalized ? 4 : 0,
+                                })} (${Number.isFinite(percent) ? (percent * 100).toFixed(0) : "0"}%)`
+                              }
+                            >
+                              {chartData.reasonData.map((entry, index) => (
+                                <Cell
+                                  key={`reason-cell-${index}`}
+                                  fill={entry.sign >= 0 ? "#10B981" : "#EF4444"} // green for +, red for -
+                                />
+                              ))}
+                            </Pie>
+                            <Tooltip
+                              formatter={(_, __, { payload }) =>
+                                [
+                                  payload.value.toLocaleString("en-US", {
+                                    style: "currency",
+                                    currency: "USD",
+                                    maximumFractionDigits: isNormalized ? 4 : 2,
+                                  }),
+                                  payload.name,
+                                ]
+                              }
+                              contentStyle={{ backgroundColor: "#1F2937", border: "1px solid #374151" }}
+                            />
+                            <Legend wrapperStyle={{ color: "#E5E7EB" }} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-gray-400">
+                          No data to plot yet. All close reasons net to zero.
+                        </div>
+                      )}
                     </div>
+
                   </div>
 
                   <div className="bg-gray-800 p-6 rounded-xl shadow-lg">
